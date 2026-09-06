@@ -363,7 +363,17 @@ metinleri basar — ikisi aynı anda olmaz. Her ikisini birden almak için:
 İkisi de `finally` içinde eski hâline döndürülür. Kanca kurulamazsa işlem yine
 çalışır, sadece ilerleme kabalaşır.
 
-## Eski sürüm
+## Lisans
 
-[SubsForge.py](SubsForge.py) tkinter arayüzlü ilk sürümdür; olduğu gibi durur ve
-bu uygulamadan bağımsız çalışır.
+Whispera **MIT** lisanslıdır — bkz. [LICENSE](LICENSE).
+
+Kaynak koddan çalıştırmak için başka bir yükümlülük yok. Hazır `.exe`
+dağıtacaksanız, pakete giren üçüncü taraf bileşenlerin lisansları
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) dosyasında listelenmiştir.
+Dikkat gerektiren tek bileşen **Qt/PySide6 (LGPL-3.0)**: PyInstaller'ın
+`onedir` kipinde Qt kütüphaneleri `_internal/PySide6/` altında ayrı `.dll`
+dosyaları olarak kaldığı için LGPL'in «kullanıcı kütüphaneyi
+değiştirebilmeli» şartı sağlanıyor. **Onefile kipine geçmeyin**, bu uyumu
+bozar.
+
+ffmpeg pakete dahil değildir; sistemdeki ffmpeg çağrılır.

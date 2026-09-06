@@ -1,0 +1,5 @@
+# Depoda LF, Windows calisma kopyasinda CRLF
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ico binary
+*.pt binary

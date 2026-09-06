@@ -1,0 +1,30 @@
+# Sanal ortam
+.venv/
+venv/
+
+# PyInstaller ciktilari
+build/
+dist/
+*.manifest
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Whisper model dosyalari (yuzlerce MB - depoya girmez)
+models/
+*.pt
+
+# AYARLAR - API anahtarlari burada tutuluyor, asla yuklenmemeli
+forge_settings.json
+
+# Isletim sistemi
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Onceki neslin (tkinter) uygulamasindan kalanlar - Whispera'nin parcasi degil
+SubsForge.py
+surum.py
+settings.json

@@ -118,6 +118,15 @@ kapatılıyor — yoksa müstehcen satırlar boş dönüyor. Satır hizası
 numaralandırmayla korunur: model bir satırı atlar ya da birleştirirse sonuç
 kaymaz, o satır çevrilmemiş sayılıp alttaki motorlara devredilir.
 
+**Ücretsiz kota.** Gemini'nin ücretsiz katmanı model başına *günlük istek
+sayısıyla* sınırlı (Eylül 2026'da gemini-3.6-flash için günde 20 istek). Bu
+yüzden satırlar 150'lik paketlerle gönderiliyor — 95 cümlelik bir film tek
+istek tutuyor. Bir modelin günlük kotası dolunca program beklemeden kotası
+ayrı tutulan sıradaki modele geçiyor (3.6-flash → 3.5-flash → 2.5-flash).
+Hepsi dolarsa kalan satırlar Google'a, o da limitteyse orijinal dilde kalır;
+günlükte `⚠️ N cümle çevrilemedi` satırının altında sebebi yazar. Kotalar her
+gün sıfırlanır.
+
 **Hangi motorun çevirdiği günlükte yazıyor.** İş bitince
 `🔧 Çeviriyi yapan motorlar → Gemini: 78 · Google Translate: 4` gibi bir satır
 düşer. Anahtar girilmediyse çeviri başlarken bir uyarı çıkar; böylece "çeviri

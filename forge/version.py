@@ -1,6 +1,6 @@
 """Sürüm bilgisinin tek kaynağı."""
 
-SURUM = "2.3.0"
+SURUM = "2.3.1"
 UYGULAMA_ADI = "Whispera"
 
 

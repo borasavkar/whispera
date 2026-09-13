@@ -249,8 +249,17 @@ class GeminiCevirici:
                 "models/{model}:generateContent")
     MODEL_LISTESI = "https://generativelanguage.googleapis.com/v1beta/models"
     VARSAYILAN_MODEL = "gemini-3.6-flash"
-    PAKET_SATIR = 40           # tek istekte gönderilecek satır sayısı
-    ZAMAN_ASIMI = 90
+    # Ücretsiz katman model başına GÜNLÜK istek sayısıyla sınırlı (ölçüldü:
+    # gemini-3.6-flash için günde 20). 40 satırlık paketlerle uzun bir film
+    # 15 istek tutuyor ve ikinci filmin ortasında kota bitiyordu. 190 satırlık
+    # tek paket ölçüldü: 190/190 satır, hiza sağlam, 26 sn.
+    PAKET_SATIR = 150          # tek istekte gönderilecek satır sayısı
+    ZAMAN_ASIMI = 180
+
+    # Kota model başına ayrı tutuluyor; biri dolunca sıradakine geçilir.
+    # 3.5-flash ve 2.5-flash aynı zor satırlarla ölçüldü, kayıt korunuyor.
+    YEDEK_MODELLER = ("gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash")
+    DAKIKA_BEKLEME_UST = 65.0  # dakikalık kota için en fazla bu kadar bekle
 
     # Yeni modeller yoğunlukta 503 veriyor. Tek bir sarsıntıda paketi Google'a
     # düşürmek çeviri kaydını bozuyor; ölçüldü: 11 satırlık paket bir turda
@@ -278,6 +287,9 @@ class GeminiCevirici:
         self._anahtar = (anahtar or "").strip()
         self._model = (model or self.VARSAYILAN_MODEL).strip()
         self._model_tazelendi = False
+        # Günlük kotası dolan modeller ve hepsinin tükenip tükenmediği.
+        self._tukenen: set[str] = set()
+        self.kota_doldu = False
         self._log = log or (lambda mesaj: None)
         self._iptal = iptal or (lambda: False)
         self.devre_disi = not self._anahtar
@@ -300,7 +312,9 @@ class GeminiCevirici:
             ],
         }
         son_hata = "bilinmeyen"
-        for deneme in range(self.DENEME_SAYISI):
+        deneme = 0
+        while deneme < self.DENEME_SAYISI:
+            deneme += 1
             if self._iptal():
                 raise KullaniciIptali()
             cevap = self._oturum.post(
@@ -323,23 +337,79 @@ class GeminiCevirici:
             son_hata = f"HTTP {cevap.status_code}: {cevap.text[:120]}"
 
             # Model emekliye ayrılmışsa Google yerine geçeni mesajda söylüyor.
-            if cevap.status_code == 404 and not self._model_tazelendi:
-                yeni_model = self._yeni_model_bul(cevap.text)
-                if yeni_model:
+            if cevap.status_code == 404:
+                yeni_model = None
+                if not self._model_tazelendi:
+                    yeni_model = self._yeni_model_bul(cevap.text)
+                    self._model_tazelendi = True
+                if yeni_model and yeni_model not in self._tukenen:
                     self._log(f"   ℹ️ Gemini modeli «{self._model}» artık "
                               f"kullanılamıyor; «{yeni_model}» modeline geçiliyor.")
                     self._model = yeni_model
-                    self._model_tazelendi = True
+                    deneme = 0
+                    continue
+                if self._sonraki_modele_gec("kullanılamıyor"):
+                    deneme = 0
                     continue
                 raise CeviriHatasi(son_hata)
+
+            if cevap.status_code == 429:
+                gunluk, bekleme = self._kota_bilgisi(cevap)
+                if gunluk:
+                    # Günlük kota saniyeler içinde açılmaz; yeniden denemek
+                    # sadece zaman kaybı. Kotası ayrı olan modele geç.
+                    if self._sonraki_modele_gec("günlük ücretsiz kotası doldu"):
+                        deneme = 0
+                        continue
+                    self.kota_doldu = True
+                    self.devre_disi = True
+                    raise CeviriHatasi("Gemini günlük ücretsiz kotası tüm modellerde doldu")
+                if deneme < self.DENEME_SAYISI:
+                    self.bekle(min(max(bekleme, 2.0) + 1.0, self.DAKIKA_BEKLEME_UST))
+                continue
 
             if cevap.status_code not in self.GECICI_KODLAR:
                 raise CeviriHatasi(son_hata)
 
-            if deneme < self.DENEME_SAYISI - 1:
-                self.bekle(2.0 * (2 ** deneme))
+            if deneme < self.DENEME_SAYISI:
+                self.bekle(2.0 * (2 ** (deneme - 1)))
 
         raise CeviriHatasi(son_hata)
+
+    @staticmethod
+    def _kota_bilgisi(cevap) -> tuple[bool, float]:
+        """429 yanıtından (günlük kota mı, önerilen bekleme saniyesi) çıkarır.
+
+        Günlük kota yanıtı da «retryDelay: 8s» taşıyor; bekleme süresine değil
+        kota kimliğine bakmak gerekiyor.
+        """
+        try:
+            hata = cevap.json().get("error") or {}
+        except Exception:
+            return False, 0.0
+        gunluk, bekleme = False, 0.0
+        for ayrinti in hata.get("details") or []:
+            for ihlal in ayrinti.get("violations") or []:
+                if "PerDay" in (ihlal.get("quotaId") or ""):
+                    gunluk = True
+            gecikme = ayrinti.get("retryDelay")
+            if isinstance(gecikme, str) and gecikme.endswith("s"):
+                try:
+                    bekleme = float(gecikme[:-1])
+                except ValueError:
+                    pass
+        return gunluk, bekleme
+
+    def _sonraki_modele_gec(self, sebep: str) -> bool:
+        """Mevcut modeli tükenmiş sayar, sıradaki kullanılabilir modele geçer."""
+        self._tukenen.add(self._model)
+        for aday in self.YEDEK_MODELLER:
+            if aday not in self._tukenen:
+                self._log(f"   ℹ️ Gemini «{self._model}»: {sebep}; "
+                          f"«{aday}» modeline geçiliyor.")
+                self._model = aday
+                return True
+        return False
 
     def bekle(self, saniye: float) -> None:
         """İptal edilebilir bekleme."""
@@ -431,6 +501,11 @@ class GeminiCevirici:
                 if "API_KEY" in str(e).upper() or "403" in str(e) or "400" in str(e):
                     self.devre_disi = True
                     self._log("   ℹ️ Gemini devre dışı bırakıldı; diğer motorlara geçiliyor.")
+                    break
+                if self.kota_doldu:
+                    self._log("   ⚠️ Gemini'nin günlük ücretsiz kotası tüm modellerde "
+                              "doldu; kalan satırlar diğer motorlara bırakılıyor. "
+                              "Kota her gün sıfırlanır.")
                     break
                 continue
             toplanan.update(self._yaniti_coz(yanit or "", grup))
@@ -949,6 +1024,14 @@ class CeviriMotoru:
                 pass
 
         basarili = sum(1 for i in cevrilecek if i in ceviriler)
+        if basarili < len(cevrilecek):
+            sebepler = []
+            if self._gemini.kota_doldu:
+                sebepler.append("Gemini günlük ücretsiz kotası doldu")
+            if self._cevirici.limit_asildi:
+                sebepler.append("Google Translate istek limitinde (HTTP 429)")
+            if sebepler:
+                self.son_hata = "; ".join(sebepler) + " — kotalar sıfırlanınca yeniden çevirin"
         if self._cevirici.limit_asildi:
             self._log("   🚫 Google'ın birincil çeviri uç noktası bu IP'ye istek limiti uyguladı "
                       "(HTTP 429). Genellikle 30-60 dakika içinde açılıyor.")

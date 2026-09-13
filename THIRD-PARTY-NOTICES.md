@@ -79,4 +79,5 @@ lisanslıdır.
 - [ ] `THIRD-PARTY-NOTICES.md` (bu dosya) pakete eklendi
 - [ ] LGPL-3.0 lisans metni pakete eklendi
 - [ ] Paketleme **onedir** kipinde (Qt DLL'leri ayrı dosya olarak duruyor)
-- [ ] `forge_settings.json` pakete **girmedi** (API anahtarı içerir)
+- [ ] `dist/Whispera/` içinde eski sürümden kalma `forge_settings.json` yok
+      (2.3.2'den beri ayarlar `%APPDATA%\Whispera\` altında; pakete girmez)

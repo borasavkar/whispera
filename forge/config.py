@@ -95,7 +95,100 @@ UYGULAMA_KLASORU = (
     else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
-AYAR_DOSYASI = os.path.join(UYGULAMA_KLASORU, "forge_settings.json")
+# Ayarlar (API anahtarları dahil) kullanıcı profilinde tutulur, exe'nin
+# yanında değil: PyInstaller her derlemede `dist/Whispera/` klasörünü silip
+# yeniden kuruyor, ayarlar ve anahtarlar da onunla gidiyordu. Profilde
+# durdukları için derlemeler arasında korunur, depoya ve dağıtılan pakete de
+# hiçbir zaman girmezler.
+AYAR_KLASORU = os.path.join(
+    os.environ.get("APPDATA") or os.path.expanduser("~"), "Whispera")
+AYAR_DOSYASI = os.path.join(AYAR_KLASORU, "settings.json")
+
+# Eski sürümlerin ayarları exe'nin yanına yazdığı yerler.
+_ESKI_AYAR_ADI = "forge_settings.json"
+ANAHTAR_ALANLARI = ("gemini_anahtari", "deepl_anahtari")
+
+
+def _eski_ayar_adaylari(proje_klasoru: str | None = None) -> list[str]:
+    klasorler = [UYGULAMA_KLASORU, os.path.dirname(UYGULAMA_KLASORU)]
+    if proje_klasoru:
+        klasorler.append(proje_klasoru)
+    adaylar: list[str] = []
+    for kok in klasorler:
+        adaylar.append(os.path.join(kok, _ESKI_AYAR_ADI))
+        for ad in ("Whispera", "SubtitleForge"):
+            adaylar.append(os.path.join(kok, ad, _ESKI_AYAR_ADI))
+            adaylar.append(os.path.join(kok, "dist", ad, _ESKI_AYAR_ADI))
+    goruldu: set[str] = set()
+    sonuc = []
+    for yol in adaylar:
+        tam = os.path.normcase(os.path.abspath(yol))
+        if tam not in goruldu and os.path.isfile(yol):
+            goruldu.add(tam)
+            sonuc.append(yol)
+    return sorted(sonuc, key=os.path.getmtime, reverse=True)
+
+
+def eski_ayarlari_tasi(proje_klasoru: str | None = None) -> str | None:
+    """Exe'nin yanındaki eski ayar dosyasını kullanıcı profiline taşır.
+
+    Profilde dosya yoksa en yeni eski dosya olduğu gibi kopyalanır. Varsa
+    yalnızca profilde BOŞ olan API anahtarları eski dosyadan doldurulur —
+    profildeki hiçbir değerin üzerine yazılmaz. Eski dosyaya dokunulmaz.
+    Ne yapıldığını anlatan kısa bir metin döner, iş yoksa None.
+    """
+    adaylar = _eski_ayar_adaylari(proje_klasoru)
+    if not adaylar:
+        return None
+    try:
+        with open(adaylar[0], "r", encoding="utf-8") as f:
+            eski = json.load(f)
+        if not isinstance(eski, dict):
+            return None
+    except Exception:
+        return None
+
+    os.makedirs(AYAR_KLASORU, exist_ok=True)
+    if not os.path.isfile(AYAR_DOSYASI):
+        gecici = AYAR_DOSYASI + ".yeni"
+        with open(gecici, "w", encoding="utf-8") as f:
+            json.dump(eski, f, ensure_ascii=False, indent=2)
+        os.replace(gecici, AYAR_DOSYASI)
+        # Başka bir eski dosyada, kopyalanan dosyada boş olan anahtar olabilir.
+        ek = eski_ayarlari_tasi(proje_klasoru)
+        return f"ayarlar taşındı: {adaylar[0]} -> {AYAR_DOSYASI}" + (f"; {ek}" if ek else "")
+
+    try:
+        with open(AYAR_DOSYASI, "r", encoding="utf-8") as f:
+            yeni = json.load(f)
+    except Exception:
+        return None
+    doldurulan = [k for k in ANAHTAR_ALANLARI
+                  if not (yeni.get(k) or "").strip() and (eski.get(k) or "").strip()]
+    # Başka eski dosyalarda da olabilir (ör. yalnız birinde DeepL girilmiş).
+    for yol in adaylar[1:]:
+        eksik = [k for k in ANAHTAR_ALANLARI
+                 if not (yeni.get(k) or "").strip() and k not in doldurulan]
+        if not eksik:
+            break
+        try:
+            with open(yol, "r", encoding="utf-8") as f:
+                diger = json.load(f)
+        except Exception:
+            continue
+        for k in eksik:
+            if (diger.get(k) or "").strip():
+                eski[k] = diger[k]
+                doldurulan.append(k)
+    if not doldurulan:
+        return None
+    for k in doldurulan:
+        yeni[k] = eski[k]
+    gecici = AYAR_DOSYASI + ".yeni"
+    with open(gecici, "w", encoding="utf-8") as f:
+        json.dump(yeni, f, ensure_ascii=False, indent=2)
+    os.replace(gecici, AYAR_DOSYASI)
+    return "profildeki boş anahtarlar dolduruldu: " + ", ".join(doldurulan)
 
 # Uygulamanın yanındaki `models` klasörü — varsa modeller oradan okunur.
 TASINABILIR_MODEL_KLASORU = os.path.join(UYGULAMA_KLASORU, "models")
@@ -180,7 +273,13 @@ class Ayarlar:
     # --- Uygulamaya özgü ---
     ffmpeg_yolu: str = ""
     turkce_ceviri: bool = True
+    # Çeviri eksiksiz bittiyse orijinal dildeki altyazıyı (Film_ES.srt vb.)
+    # Geri Dönüşüm Kutusu'na taşı. Varsayılan kapalı.
+    orijinali_sil: bool = False
     deepl_anahtari: str = ""             # boşsa DeepL hiç denenmez
+    # Anahtar kayıtlı olsa da DeepL yalnızca bu açıkken denenir. Varsayılan
+    # kapalı: aylık karakter kotası kullanıcının isteğiyle harcansın.
+    deepl_kullan: bool = False
     gemini_anahtari: str = ""            # boşsa Gemini hiç denenmez
     gemini_modeli: str = "gemini-3.6-flash"
     sansursuz: bool = True
@@ -198,6 +297,11 @@ class Ayarlar:
 
     @classmethod
     def yukle(cls, yol: str = AYAR_DOSYASI) -> "Ayarlar":
+        if yol == AYAR_DOSYASI:
+            try:
+                eski_ayarlari_tasi()
+            except Exception:
+                pass
         try:
             with open(yol, "r", encoding="utf-8") as f:
                 ham = json.load(f)
@@ -240,6 +344,7 @@ class Ayarlar:
     def kaydet(self, yol: str = AYAR_DOSYASI) -> None:
         gecici = yol + ".yeni"
         try:
+            os.makedirs(os.path.dirname(yol) or ".", exist_ok=True)
             with open(gecici, "w", encoding="utf-8") as f:
                 json.dump(asdict(self), f, ensure_ascii=False, indent=2)
             os.replace(gecici, yol)

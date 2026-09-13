@@ -318,7 +318,12 @@ class Isci(QThread):
 
         # --- 7. Türkçe çeviri --------------------------------------------
         if ceviri_yapilacak:
-            yazilanlar += self._turkceye_cevir(sonuc, dosya, ceviri_kaynagi)
+            orijinaller = list(yazilanlar)
+            tr_yollari, eksiksiz = self._turkceye_cevir(sonuc, dosya, ceviri_kaynagi)
+            yazilanlar += tr_yollari
+            if ayarlar.orijinali_sil:
+                silinenler = self._orijinali_kaldir(orijinaller, tr_yollari, eksiksiz)
+                yazilanlar = [y for y in yazilanlar if y not in silinenler]
         elif ayarlar.turkce_ceviri and (ceviri_kaynagi or "").lower() == "tr":
             self._log("ℹ️ Kaynak zaten Türkçe; ayrıca çeviri dosyası üretilmedi.")
 
@@ -454,7 +459,51 @@ class Isci(QThread):
                       f"sonuç beklediğiniz gibi değilse dili elle seçin.")
         return dil
 
-    def _turkceye_cevir(self, sonuc: dict, dosya: str, kaynak_dil: str) -> list[str]:
+    def _orijinali_kaldir(self, orijinaller: list[str], tr_yollari: list[str],
+                          eksiksiz: bool) -> set[str]:
+        """Çeviri eksiksizse orijinal dildeki altyazıları Geri Dönüşüm Kutusu'na taşır.
+
+        Yalnızca aynı formatta dolu bir Türkçe karşılığı yazılmış dosyalar
+        kaldırılır. Çevrilemeyen satır varsa orijinal korunur: Türkçe dosyada o
+        satırlar zaten orijinal dilde, ama çevrilen satırların aslı başka
+        hiçbir yerde kalmaz.
+        """
+        if self._iptal.is_set():
+            return set()
+        if not tr_yollari:
+            self._log("ℹ️ Türkçe altyazı yazılamadığı için orijinal altyazı silinmedi.")
+            return set()
+        if not eksiksiz:
+            self._log("ℹ️ Bazı satırlar çevrilemediği için orijinal altyazı silinmedi.")
+            return set()
+
+        tr_uzantilar = {
+            os.path.splitext(y)[1].lower()
+            for y in tr_yollari if os.path.isfile(y) and os.path.getsize(y) > 0
+        }
+        tr_tam = {os.path.normcase(os.path.abspath(y)) for y in tr_yollari}
+        silinenler: set[str] = set()
+        denenen = 0
+        for yol in orijinaller:
+            if os.path.normcase(os.path.abspath(yol)) in tr_tam:
+                continue                      # Türkçe dosyanın kendisi: asla
+            if os.path.splitext(yol)[1].lower() not in tr_uzantilar:
+                continue
+            denenen += 1
+            tamam, aciklama = media.geri_donusume_gonder(yol)
+            if tamam:
+                silinenler.add(yol)
+                self._log(f"🗑️ {os.path.basename(yol)} — {aciklama}.")
+            else:
+                self._log(f"ℹ️ {os.path.basename(yol)} silinmedi: {aciklama}.")
+        if not denenen and orijinaller:
+            self._log("ℹ️ Aynı formatta dolu bir Türkçe altyazı bulunamadığı için "
+                      "orijinal altyazı silinmedi.")
+        return silinenler
+
+    def _turkceye_cevir(self, sonuc: dict, dosya: str,
+                        kaynak_dil: str) -> tuple[list[str], bool]:
+        """Türkçe altyazıyı yazar; (yazılan yollar, eksiksiz çevrildi mi) döner."""
         ayarlar = self._ayarlar
         self.durum_degisti.emit("Türkçeye çevriliyor")
         self._log("=" * 52)
@@ -465,12 +514,16 @@ class Isci(QThread):
             kaynak_dil = "auto"
 
         self._ceviri_tabani = 0.0
+        deepl_acik = ayarlar.deepl_kullan and bool(ayarlar.deepl_anahtari.strip())
+        if ayarlar.deepl_anahtari.strip() and not ayarlar.deepl_kullan:
+            self._log("   ℹ️ DeepL kapalı (Temel sekmesinden açılabilir); "
+                      "Gemini'nin çeviremediği satırlar doğrudan Google'a gidecek.")
         motor = translate.CeviriMotoru(
             log=self._log,
             ilerleme=self._ceviri_ilerleme,
             iptal=self._iptal.is_set,
             sansursuz=ayarlar.sansursuz,
-            deepl_anahtari=ayarlar.deepl_anahtari,
+            deepl_anahtari=ayarlar.deepl_anahtari if deepl_acik else "",
             gemini_anahtari=ayarlar.gemini_anahtari,
             gemini_modeli=ayarlar.gemini_modeli,
         )
@@ -481,7 +534,7 @@ class Isci(QThread):
             ceviriler = motor.cevir(bloklar, kaynak_dil)
         except KullaniciIptali:
             self._log("🛑 Çeviri yarıda kesildi; o ana kadar çevrilenler kaydedilemedi.")
-            return []
+            return [], False
 
         if self._iptal.is_set():
             self._log("🛑 Çeviri yarıda kesildi; o ana kadar çevrilenler kaydediliyor.")
@@ -520,7 +573,8 @@ class Isci(QThread):
             if motor.son_hata:
                 self._log(f"   Son hata: {motor.son_hata}")
 
-        return yazilanlar
+        eksiksiz = cevrilemeyen == 0 and not self._iptal.is_set()
+        return yazilanlar, eksiksiz
 
     # --- hata ------------------------------------------------------------
 

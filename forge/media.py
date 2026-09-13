@@ -83,6 +83,51 @@ def sesi_coz(medya_yolu: str, ffmpeg_yolu: str) -> np.ndarray:
     return np.frombuffer(sonuc.stdout, np.int16).flatten().astype(np.float32) / 32768.0
 
 
+def geri_donusume_gonder(yol: str) -> tuple[bool, str]:
+    """Dosyayı Windows Geri Dönüşüm Kutusu'na taşır; asla kalıcı silmez.
+
+    `SHFileOperationW` + `FOF_ALLOWUNDO` kullanılır. Windows, Geri Dönüşüm
+    Kutusu olmayan sürücülerde (USB bellek, ağ klasörü) aynı çağrıyla dosyayı
+    KALICI siler; bu yüzden yalnızca yerel sabit disklerde çalışır, diğerlerinde
+    dosyaya dokunmaz. (başarılı mı, açıklama) döner.
+    """
+    if os.name != "nt":
+        return False, "yalnızca Windows'ta destekleniyor"
+    if not os.path.isfile(yol):
+        return False, "dosya bulunamadı"
+
+    import ctypes
+    from ctypes import wintypes
+
+    tam_yol = os.path.abspath(yol)
+    surucu = os.path.splitdrive(tam_yol)[0]
+    if not surucu or surucu.startswith("\\\\"):
+        return False, "ağ yolunda Geri Dönüşüm Kutusu yok"
+    DRIVE_FIXED = 3
+    if ctypes.windll.kernel32.GetDriveTypeW(surucu + "\\") != DRIVE_FIXED:
+        return False, "bu sürücüde Geri Dönüşüm Kutusu yok (USB/ağ)"
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT),
+                    ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
+                    ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p),
+                    ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+    FO_DELETE = 0x0003
+    FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 0x4, 0x10, 0x40, 0x400
+    islem = SHFILEOPSTRUCTW()
+    islem.wFunc = FO_DELETE
+    islem.pFrom = tam_yol + "\0\0"           # çift NUL ile biten liste
+    islem.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+    sonuc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(islem))
+    if sonuc != 0 or islem.fAnyOperationsAborted:
+        return False, f"Windows işlemi reddetti (kod {sonuc})"
+    if os.path.exists(tam_yol):
+        return False, "dosya hâlâ yerinde"
+    return True, "Geri Dönüşüm Kutusu'na taşındı"
+
+
 def sure_metni(saniye: float) -> str:
     saniye = int(max(0, saniye))
     saat, kalan = divmod(saniye, 3600)

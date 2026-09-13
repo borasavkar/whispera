@@ -31,7 +31,17 @@ Gereksinimler: `openai-whisper`, `torch`, `PySide6`, `requests`,
   satırları zaman damgasıyla anında akar.
 - Gerçek yüzde ve kalan süre tahmini — whisper'ın kendi kare sayacından okunur.
 - **Günlük** sekmesi: renklendirilmiş, kopyalanabilir terminal çıktısı.
-- Pencere konumu ve tüm ayarlar `forge_settings.json` içinde saklanır.
+- **Çeviriden sonra orijinal dildeki altyazıyı sil** (varsayılan kapalı): Türkçe
+  altyazı eksiksiz yazıldıysa `Film_ES.srt` gibi orijinal dildeki dosya
+  **Geri Dönüşüm Kutusu'na** taşınır, kalıcı silinmez. Çevrilemeyen satır varsa,
+  iş iptal edildiyse ya da Türkçe dosya yazılamadıysa orijinal korunur. Geri
+  Dönüşüm Kutusu olmayan sürücülerde (USB, ağ klasörü) dosyaya dokunulmaz.
+- Pencere konumu ve tüm ayarlar (API anahtarları dahil) kullanıcı profilinde,
+  `%APPDATA%\Whispera\settings.json` içinde saklanır. Exe'nin yanında değil:
+  derlemeler `dist/` klasörünü silse de ayarlar ve anahtarlar korunur, depoya
+  ya da dağıtılan pakete hiçbir zaman girmez. Eski sürümlerin exe yanına
+  yazdığı `forge_settings.json` ilk açılışta (ve derleme başlarken) oraya
+  taşınır; profilde dolu olan bir değerin üzerine yazılmaz.
 
 **Whisper parametreleri**
 
@@ -83,13 +93,15 @@ o çıktı kelime zamanlarının blokta durmasını gerektiriyor.
 
 ## Çeviri motorları
 
-Türkçe çeviri sırayla şu yolları dener; her biri bir öncekinin bıraktığı
-satırları doldurur:
+Türkçe çeviri sırayla şu yolları dener; her biri yalnızca bir öncekinin
+çeviremediği satırları alır. Gemini hepsini çevirirse diğerlerine hiç istek
+gitmez; günlük kotası dolar ya da hata verirse kalan satırlar DeepL'e, DeepL
+de olmazsa Google'a iner:
 
 | Sıra | Motor | Anahtar | Sınır |
 | --- | --- | --- | --- |
 | 0 | **Gemini** | gerekli (ücretsiz katman) | dakikada/günde istek kotası |
-| 1 | **DeepL** | gerekli (ücretsiz katman) | ayda 500.000 karakter |
+| 1 | **DeepL** | gerekli (ücretsiz katman) | ayda 500.000 karakter (HTTP 456) |
 | 2 | Google `translate_a` | yok | IP başına istek limiti (HTTP 429) |
 | 3 | Google (deep_translator) | yok | farklı uç nokta, ayrı limit |
 | 4 | **MyMemory** | yok | günde ~5.000 karakter (anonim) |
@@ -154,9 +166,27 @@ bloğa yayıldığı için) sorun iyice belirginleşti. Artık cümle bir bütü
 ele alınıyor; tek bloğa sığmazsa **Türkçe metnin kendi noktalamasından**
 bölünüyor ve süre parça uzunluklarıyla orantılı dağıtılıyor.
 
-DeepL anahtarı Temel sekmesinden girilir; boşsa hiç denenmez. Türkçe çevirisi
-Google'dan belirgin biçimde daha akıcıdır ve bir filmin altyazısı tipik olarak
-30-50 bin karakter olduğu için ücretsiz katman ayda on kadar filme yeter.
+DeepL anahtarı Temel sekmesinden girilir. Anahtar kayıtlı olsa da DeepL
+yalnızca **«DeepL'i kullan»** kutusu işaretliyken denenir (varsayılan: kapalı);
+kapalıyken Gemini'nin çeviremediği satırlar doğrudan Google'a gider ve DeepL'in
+aylık kotası harcanmaz. Kutu bir sonraki işte etkili olur. Bir filmin
+altyazısı tipik olarak 30-50 bin karakter olduğu için ücretsiz katman ayda on
+kadar filme yeter — ama Gemini önde olduğu için DeepL genellikle yalnızca
+Gemini'nin kotası dolduğunda devreye girer.
+
+DeepL'in resmi REST API'si kullanılıyor (anahtar `Authorization` başlığında).
+2.3.1'e kadar `deep_translator` kullanılıyordu; o anahtarı URL'de gönderiyor ve
+DeepL bunu reddediyor (HTTP 403 «Missing Authorization header») — yani DeepL
+basamağı o sürümlerde **hiç çalışmıyordu**. Satırlar dizi olarak gider, her
+satıra bir çeviri döner; paketin tamamı ücretlendirilmeyen `context` alanında
+da verilir. `:fx` ile biten anahtarlar ücretsiz uç noktaya gider. Geçici
+hatalarda yeniden denenir; anahtar geçersizse (403) ya da aylık kota dolduysa
+(456) DeepL o dosya için kapanır ve Google devralır.
+
+Aynı zor satırlarla ölçüldü: DeepL argoyu Google'dan belirgin biçimde sert
+aktarıyor (`¿Se llama polla?` → «Buna sik mi denir?», `¡Qué puta eres!` →
+«Ne orospusun sen!»), Gemini'den biraz yumuşak (`¿Qué tetas tienes?` → «Ne
+tür göğüslerin var?»).
 
 ### Beşinci basamak neden kapalı
 

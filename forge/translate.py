@@ -3,17 +3,18 @@
 Kademeli bir yol izlenir; her kademe bir öncekinin bıraktığı boşlukları
 doldurur:
 
-1. **DeepL** — yalnızca kullanıcı bir API anahtarı girdiyse. En akıcı çeviriyi
-   veren ve aylık kotası en geniş olan yol, bu yüzden ilk sırada.
-2. **Toplu paket** — cümle bütünlüğü korunarak gruplanmış satırlar Google'ın
+1. **Gemini** — anahtar girildiyse. Argoyu ve küfrü yumuşatmadan çeviren tek
+   motor; günlük kotası dolunca kalan satırlar bir alt basamağa iner.
+2. **DeepL** — anahtar girildiyse. Gemini'nin çeviremediği satırlar için.
+3. **Toplu paket** — cümle bütünlüğü korunarak gruplanmış satırlar Google'ın
    `translate_a/single` uç noktasına tek istekte gönderilir. Anahtarsız
    yollar içinde en hızlısı ve bağlamı en iyi koruyanı budur.
-3. **Yedek yol** — pakette kalan satırlar `deep_translator` üzerinden tek tek
+4. **Yedek yol** — pakette kalan satırlar `deep_translator` üzerinden tek tek
    denenir. Yavaş ama farklı bir uç nokta kullandığı için limitlere takılan
    satırları kurtarır.
-4. **MyMemory** — anahtarsız üçüncü kaynak; günlük karakter kotası dar olduğu
+5. **MyMemory** — anahtarsız üçüncü kaynak; günlük karakter kotası dar olduğu
    için bir filmi tek başına bitiremez, kalan satırları toplar.
-5. **Yerel model** — Helsinki-NLP Marian modelleri makinede çalıştırılır.
+6. **Yerel model** — Helsinki-NLP Marian modelleri makinede çalıştırılır.
    `transformers` kurulu olmadığı ve `Whispera.spec` onu hariç tuttuğu
    için şu an devre dışı; kütüphane gelirse kendiliğinden canlanır.
 
@@ -597,35 +598,168 @@ class MyMemoryCevirici:
 
 
 class DeepLCevirici:
-    """Anahtar verilirse ilk sırada denenen motor.
+    """Gemini'den sonra, Google'dan önce denenen motor.
 
-    DeepL'in Türkçe çevirisi Google'dan gözle görülür biçimde daha akıcı ve
-    ücretsiz katmanı ayda 500.000 karakter — bir filmin altyazısı tipik olarak
-    30-50 bin karakter, yani ayda on kadar film sığıyor. Anahtar yoksa sınıf
-    hiç devreye girmez.
+    DeepL'in resmi REST API'si kullanılır: `POST /v2/translate`, anahtar
+    `Authorization: DeepL-Auth-Key` başlığında. Önceden `deep_translator`
+    kullanılıyordu; o anahtarı URL'de `auth_key` olarak GET ile gönderiyor ve
+    DeepL bunu reddediyor (ölçüldü: HTTP 403 «Missing Authorization header»).
+    Yani DeepL bu uygulamada hiç çalışmamıştı.
+
+    Satırlar `text` dizisinin ayrı elemanları olarak gider ve her elemana bir
+    çeviri döner; hiza, satırları birleştirip yeniden bölmeye bağlı kalmaz.
+    Paketin tamamı ayrıca `context` olarak verilir (DeepL bunu ücretlendirmez):
+    «Toma.» gibi tek kelimelik satırlar çevresindeki diyalogdan yararlanır.
+
+    Ücretsiz anahtarlar `:fx` ile biter ve `api-free` uç noktasına gider.
+    Geçici hatalarda (429, 5xx, bağlantı) yeniden denenir; anahtar geçersizse
+    (403) ya da aylık kota dolduysa (456) dosyanın geri kalanında devre dışı
+    kalır ve sıradaki motora geçilir.
     """
 
-    def __init__(self, anahtar: str, log=None):
+    UCRETSIZ = "https://api-free.deepl.com/v2/translate"
+    PRO = "https://api.deepl.com/v2/translate"
+    ZAMAN_ASIMI = 60
+    DENEME_SAYISI = 4
+    MAX_METIN = 50                 # API'nin istek başına metin sınırı
+    ARDISIK_HATA_SINIRI = 3        # bu kadar paket üst üste başarısızsa kapat
+    GECICI_KODLAR = (429, 500, 502, 503, 504, 529)
+    KAYNAK_DILLER = frozenset(
+        "AR BG CS DA DE EL EN ES ET FI FR HE HU ID IT JA KO LT LV NB NL PL PT "
+        "RO RU SK SL SV TH TR UK VI ZH".split())
+
+    def __init__(self, anahtar: str, log=None,
+                 iptal: Callable[[], bool] | None = None):
         self._anahtar = (anahtar or "").strip()
         self._log = log or (lambda mesaj: None)
+        self._iptal = iptal or (lambda: False)
         self.devre_disi = not self._anahtar
+        self.kota_doldu = False
+        self.cevrilen = 0              # başarıyla çevrilen metin sayısı
+        self.sebep: str | None = None  # devre dışı kaldıysa neden
+        self._baglam_destekli = True
+        self._uc_nokta_denendi = False
+        self._ardisik_hata = 0
+        self._kilit = threading.Lock()
+        self.uc_nokta = self.UCRETSIZ if self._anahtar.endswith(":fx") else self.PRO
+
+    # --- dış arayüz ------------------------------------------------------
 
     def cevir(self, metin: str, kaynak_dil: str, hedef: str = "tr") -> str | None:
-        if self.devre_disi:
+        sonuc = self.cevir_liste([metin], kaynak_dil, hedef)
+        return sonuc[0] if sonuc and sonuc[0] else None
+
+    def cevir_liste(self, metinler: list[str], kaynak_dil: str,
+                    hedef: str = "tr") -> list[str] | None:
+        """Metin listesini çevirir; aynı uzunlukta liste ya da None döner."""
+        if self.devre_disi or not metinler:
             return None
-        try:
-            from deep_translator import DeeplTranslator
-            kaynak = (kaynak_dil or "auto").split("-")[0]
-            sonuc = DeeplTranslator(api_key=self._anahtar, source=kaynak,
-                                    target=hedef, use_free_api=True).translate(metin)
-        except Exception as e:
-            # Anahtar geçersizse ya da kota dolduysa tekrar denemenin anlamı yok.
+        sonuc: list[str] = []
+        for bas in range(0, len(metinler), self.MAX_METIN):
+            parca = self._istek(metinler[bas:bas + self.MAX_METIN], kaynak_dil, hedef)
+            if parca is None:
+                return None
+            sonuc.extend(parca)
+        return sonuc
+
+    # --- iç işler --------------------------------------------------------
+
+    def _kapat(self, sebep: str) -> None:
+        with self._kilit:
+            if self.devre_disi:
+                return
             self.devre_disi = True
-            self._log(f"   ℹ️ DeepL kullanılamadı ({e.__class__.__name__}: "
-                      f"{str(e)[:60]}); diğer motorlara geçiliyor.")
-            return None
-        sonuc = (sonuc or "").strip()
-        return sonuc or None
+            self.sebep = sebep
+        self._log(f"   \u2139\ufe0f DeepL devre dışı: {sebep}; sıradaki motora geçiliyor.")
+
+    def _basarisiz(self, sebep: str) -> None:
+        with self._kilit:
+            self._ardisik_hata += 1
+            kapat = self._ardisik_hata >= self.ARDISIK_HATA_SINIRI
+        if kapat:
+            self._kapat(f"üst üste {self.ARDISIK_HATA_SINIRI} paket başarısız ({sebep})")
+
+    def _bekle(self, saniye: float) -> None:
+        bitis = time.time() + saniye
+        while time.time() < bitis:
+            if self._iptal():
+                raise KullaniciIptali()
+            time.sleep(0.2)
+
+    def _istek(self, parca: list[str], kaynak_dil: str, hedef: str) -> list[str] | None:
+        govde: dict = {"text": parca, "target_lang": hedef.upper()}
+        kaynak = (kaynak_dil or "").split("-")[0].upper()
+        if kaynak in self.KAYNAK_DILLER:
+            govde["source_lang"] = kaynak
+        if self._baglam_destekli and len(parca) > 1:
+            govde["context"] = "\n".join(parca)
+
+        son_hata = "bilinmeyen"
+        deneme = 0
+        while deneme < self.DENEME_SAYISI:
+            deneme += 1
+            if self.devre_disi:
+                return None
+            if self._iptal():
+                raise KullaniciIptali()
+            try:
+                cevap = requests.post(
+                    self.uc_nokta, json=govde, timeout=self.ZAMAN_ASIMI,
+                    headers={"Authorization": f"DeepL-Auth-Key {self._anahtar}"})
+            except requests.RequestException as e:
+                son_hata = e.__class__.__name__
+                if deneme < self.DENEME_SAYISI:
+                    self._bekle(2.0 * deneme)
+                continue
+
+            kod = cevap.status_code
+            if kod == 200:
+                try:
+                    ceviriler = [(t.get("text") or "").strip()
+                                 for t in cevap.json()["translations"]]
+                except Exception:
+                    self._basarisiz("yanıt çözülemedi")
+                    return None
+                if len(ceviriler) != len(parca):
+                    self._basarisiz("satır sayısı tutmadı")
+                    return None
+                with self._kilit:
+                    self._ardisik_hata = 0
+                    self.cevrilen += len(ceviriler)
+                return ceviriler
+
+            son_hata = f"HTTP {kod}: {cevap.text[:100]}"
+            if kod == 403:
+                # `:fx` ile bitmeyen eski bir ücretsiz anahtar da olabilir:
+                # diğer uç noktayı bir kez dene.
+                if not self._uc_nokta_denendi:
+                    self._uc_nokta_denendi = True
+                    self.uc_nokta = self.PRO if self.uc_nokta == self.UCRETSIZ else self.UCRETSIZ
+                    deneme -= 1
+                    continue
+                self._kapat("anahtar geçersiz (HTTP 403)")
+                return None
+            if kod == 456:
+                self.kota_doldu = True
+                self._kapat("aylık karakter kotası doldu (HTTP 456)")
+                return None
+            if kod == 400 and "context" in govde:
+                self._baglam_destekli = False
+                govde.pop("context")
+                deneme -= 1
+                continue
+            if kod == 400 and "source_lang" in govde:
+                govde.pop("source_lang")
+                deneme -= 1
+                continue
+            if kod in self.GECICI_KODLAR:
+                if deneme < self.DENEME_SAYISI:
+                    self._bekle(min(2.0 * (2 ** (deneme - 1)), 20.0))
+                continue
+            break
+
+        self._basarisiz(son_hata)
+        return None
 
 
 def _uzunu_parcala(metin: str, sinir: int) -> list[str]:
@@ -747,7 +881,7 @@ class CeviriMotoru:
                  sansursuz: bool = True,
                  deepl_anahtari: str = "",
                  gemini_anahtari: str = "",
-                 gemini_modeli: str = "gemini-2.0-flash"):
+                 gemini_modeli: str = GeminiCevirici.VARSAYILAN_MODEL):
         self._log = log
         self._ilerleme = ilerleme
         self._iptal = iptal
@@ -755,7 +889,7 @@ class CeviriMotoru:
         self._cevirici: GoogleCevirici | None = None
         self._yerel: YerelCevirici | None = None
         self._mymemory: MyMemoryCevirici | None = None
-        self._deepl = DeepLCevirici(deepl_anahtari, log=log)
+        self._deepl = DeepLCevirici(deepl_anahtari, log=log, iptal=iptal)
         self._gemini = GeminiCevirici(gemini_anahtari, gemini_modeli,
                                       log=log, iptal=iptal)
         self.son_hata: str | None = None
@@ -891,15 +1025,13 @@ class CeviriMotoru:
         metinler = [satirlar[i] for i in grup]
         hizasiz = False
 
-        # Anahtar varsa önce DeepL: hem daha akıcı hem de aylık kotası geniş.
-        deepl = self._deepl.cevir(AYIRAC.join(metinler), kaynak_dil)
-        if deepl:
-            parcalar = deepl.split(AYIRAC)
-            if len(parcalar) == len(grup):
-                for i, parca in zip(grup, parcalar):
-                    parca = parca.strip()
-                    sonuclar[i] = parca if parca else satirlar[i]
-                return
+        # Gemini'den kalanlar için önce DeepL. Satırlar dizi olarak gider, her
+        # birine bir çeviri döner; hiza bölmeye bağlı değil.
+        deepl = self._deepl.cevir_liste(metinler, kaynak_dil)
+        if deepl is not None:
+            for i, parca in zip(grup, deepl):
+                sonuclar[i] = parca if parca else satirlar[i]
+            return
 
         try:
             cevrilmis = self._cevirici.cevir("\n".join(metinler), kaynak_dil)
@@ -961,7 +1093,7 @@ class CeviriMotoru:
             return self._bloklara_dagit(cumle_gruplari, ceviriler, blok_metinleri, kaynak_dil)
 
         if self._gemini.devre_disi and self._deepl.devre_disi:
-            self._log("   ⚠️ Gemini/DeepL anahtarı girilmedi — çeviri Google Translate "
+            self._log("   ⚠️ Gemini anahtarı girilmedi ve DeepL kullanılmıyor — çeviri Google Translate "
                       "ile yapılacak. Google argoyu sözlük anlamıyla çeviriyor ve küfrü "
                       "yumuşatıyor; gerçek bir dosyada ölçüldü: polla → «horoz», "
                       "nabos → «şalgam», emir kipi Chupa → mastar «Emmek». Sert ya da "
@@ -993,17 +1125,18 @@ class CeviriMotoru:
                   f"{sum(len(g) for g in gruplar)} cümle {len(gruplar)} pakette "
                   f"gönderilecek ({ISCI_SAYISI} eşzamanlı istek).")
 
-        _o = len(ceviriler)
+        if not self._deepl.devre_disi:
+            self._log(f"   \U0001f537 DeepL ile çevriliyor ({sum(len(g) for g in gruplar)} cümle)…")
+        _o, _d = len(ceviriler), self._deepl.cevrilen
         self._paketleri_gonder(gruplar, satirlar, kaynak_dil, ceviriler, cevrilecek, t_baslangic)
         self._onarim_turlari(satirlar, kaynak_dil, ceviriler, cevrilecek)
-        _ad = "Google Translate" if self._deepl.devre_disi else "DeepL/Google"
-        self.motor_sayaci[_ad] = self.motor_sayaci.get(_ad, 0) + len(ceviriler) - _o
+        self._katman_say("Google Translate", _o, _d, ceviriler)
 
         kalan = [i for i in cevrilecek if i not in ceviriler]
         if kalan and not self._iptal():
-            _o = len(ceviriler)
+            _o, _d = len(ceviriler), self._deepl.cevrilen
             self._yedek_yoldan_cevir(kalan, satirlar, kaynak_dil, ceviriler)
-            self.motor_sayaci["Google (yedek)"] = len(ceviriler) - _o
+            self._katman_say("Google (yedek)", _o, _d, ceviriler)
 
         kalan = [i for i in cevrilecek if i not in ceviriler]
         if kalan and not self._iptal():
@@ -1028,6 +1161,8 @@ class CeviriMotoru:
             sebepler = []
             if self._gemini.kota_doldu:
                 sebepler.append("Gemini günlük ücretsiz kotası doldu")
+            if self._deepl.sebep:
+                sebepler.append(f"DeepL {self._deepl.sebep}")
             if self._cevirici.limit_asildi:
                 sebepler.append("Google Translate istek limitinde (HTTP 429)")
             if sebepler:
@@ -1044,6 +1179,15 @@ class CeviriMotoru:
 
         self.cumle_ceviriler = dict(ceviriler)
         return self._bloklara_dagit(cumle_gruplari, ceviriler, blok_metinleri, kaynak_dil)
+
+    def _katman_say(self, ad: str, once_toplam: int, once_deepl: int, ceviriler) -> None:
+        """Bir katmanda eklenen çevirileri DeepL ve asıl motor olarak ayırır."""
+        deepl = self._deepl.cevrilen - once_deepl
+        diger = max(0, len(ceviriler) - once_toplam - deepl)
+        if deepl:
+            self.motor_sayaci["DeepL"] = self.motor_sayaci.get("DeepL", 0) + deepl
+        if diger:
+            self.motor_sayaci[ad] = self.motor_sayaci.get(ad, 0) + diger
 
     def _paketleri_gonder(self, gruplar, satirlar, kaynak_dil, ceviriler,
                           cevrilecek, t_baslangic) -> None:

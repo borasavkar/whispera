@@ -20,6 +20,13 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 sys.path.insert(0, os.path.abspath("."))
 from forge.version import SURUM, UYGULAMA_ADI     # noqa: E402
+from forge.config import eski_ayarlari_tasi        # noqa: E402
+
+# Derleme `dist/Whispera/` klasörünü silecek. İçinde eski sürümün yazdığı
+# ayarlar (API anahtarları) varsa, silinmeden önce kullanıcı profiline taşı.
+_tasima = eski_ayarlari_tasi(os.path.abspath("."))
+if _tasima:
+    print(f"[Whispera] {_tasima}")
 
 SITE = Path(SPECPATH) / ".venv" / "Lib" / "site-packages"
 

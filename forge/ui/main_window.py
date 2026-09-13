@@ -406,8 +406,20 @@ class AnaPencere(QMainWindow):
             "Tekrar döngülerini ayıkla",
             "Model aynı cümleyi arka arkaya üretmeye başlarsa (halüsinasyon döngüsü) "
             "fazlalık bloklar atılır.")
-        for onay in (self.chk_turkce, self.chk_sansursuz,
-                     self.chk_dil_oylama, self.chk_tekrar):
+        self.chk_orijinal_sil = Onay(
+            "Çeviriden sonra orijinal dildeki altyazıyı sil",
+            "Türkçe altyazı eksiksiz yazıldıysa «Dosya_EN.srt» gibi orijinal dildeki "
+            "dosya Geri Dönüşüm Kutusu'na taşınır (kalıcı silinmez). Çevrilemeyen "
+            "satır varsa ya da iş iptal edildiyse orijinal korunur.")
+        self.chk_turkce.toggled.connect(self.chk_orijinal_sil.setEnabled)
+        orijinal_sil_satiri = QWidget()
+        orijinal_sil_duzen = QHBoxLayout(orijinal_sil_satiri)
+        orijinal_sil_duzen.setContentsMargins(26, 0, 0, 0)   # Türkçe seçeneğine bağlı
+        orijinal_sil_duzen.addWidget(self.chk_orijinal_sil)
+
+        duzen.addWidget(self.chk_turkce)
+        duzen.addWidget(orijinal_sil_satiri)
+        for onay in (self.chk_sansursuz, self.chk_dil_oylama, self.chk_tekrar):
             duzen.addWidget(onay)
 
         self.txt_ffmpeg = QLineEdit()
@@ -437,14 +449,20 @@ class AnaPencere(QMainWindow):
             "koruyor. Anahtarı aistudio.google.com adresinden ücretsiz alınır."))
 
         self.txt_deepl = QLineEdit()
-        self.txt_deepl.setPlaceholderText("Boş — Google + MyMemory kullanılır")
+        self.txt_deepl.setPlaceholderText("Boş — DeepL denenmez")
         self.txt_deepl.setEchoMode(QLineEdit.Password)
+        self.chk_deepl = Onay(
+            "DeepL'i kullan",
+            "Açıkken Gemini'nin çeviremediği satırlar (günlük kota dolduğunda ya da "
+            "hata verdiğinde) Google'dan önce DeepL'e gider. Kapalıyken anahtar "
+            "saklanır ama DeepL'e hiç istek gitmez; aylık karakter kotası harcanmaz.")
+        self.chk_deepl.toggled.connect(self.txt_deepl.setEnabled)
         duzen.addWidget(Ayirac())
+        duzen.addWidget(self.chk_deepl)
         duzen.addWidget(alan(
             "DeepL API anahtarı (isteğe bağlı)", self.txt_deepl,
-            "Girilirse çeviride ilk sırada DeepL denenir: Türkçesi Google'dan "
-            "belirgin biçimde daha akıcı ve ücretsiz katmanı ayda 500.000 karakter "
-            "(bir film ~30-50 bin). Boşsa hiç denenmez."))
+            "«DeepL'i kullan» açıkken Gemini'den sonra, Google'dan önce denenir. "
+            "Ücretsiz katman ayda 500.000 karakter (bir film ~30-50 bin)."))
 
         duzen.addWidget(Ayirac())
         duzen.addWidget(alan(
@@ -779,9 +797,13 @@ class AnaPencere(QMainWindow):
         self.txt_cikti.setText(a.cikti_klasoru)
         self.txt_ffmpeg.setText(a.ffmpeg_yolu)
         self.txt_deepl.setText(a.deepl_anahtari)
+        self.chk_deepl.setChecked(a.deepl_kullan)
+        self.txt_deepl.setEnabled(a.deepl_kullan)
         self.txt_gemini.setText(a.gemini_anahtari)
 
         self.chk_turkce.setChecked(a.turkce_ceviri)
+        self.chk_orijinal_sil.setChecked(a.orijinali_sil)
+        self.chk_orijinal_sil.setEnabled(a.turkce_ceviri)
         self.chk_sansursuz.setChecked(a.sansursuz)
         self.chk_dil_oylama.setChecked(a.dil_oylamasi)
         self.chk_tekrar.setChecked(a.tekrar_filtresi)
@@ -834,9 +856,11 @@ class AnaPencere(QMainWindow):
         a.cikti_klasoru = self.txt_cikti.text().strip()
         a.ffmpeg_yolu = self.txt_ffmpeg.text().strip()
         a.deepl_anahtari = self.txt_deepl.text().strip()
+        a.deepl_kullan = self.chk_deepl.isChecked()
         a.gemini_anahtari = self.txt_gemini.text().strip()
 
         a.turkce_ceviri = self.chk_turkce.isChecked()
+        a.orijinali_sil = self.chk_orijinal_sil.isChecked()
         a.sansursuz = self.chk_sansursuz.isChecked()
         a.dil_oylamasi = self.chk_dil_oylama.isChecked()
         a.tekrar_filtresi = self.chk_tekrar.isChecked()

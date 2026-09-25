@@ -1,0 +1,7 @@
+# Testler için yeterli olan hafif küme. torch, openai-whisper ve PySide6
+# gerekmez: testler yalnızca saf mantığı (bölümleme, halüsinasyon süzgeçleri,
+# çeviri sırası) sınar ve ağ çağrıları taklit edilir.
+pytest>=8
+requests>=2.28
+deep-translator>=1.11
+numpy

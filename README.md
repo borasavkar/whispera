@@ -14,7 +14,24 @@ erişilebilir; üstüne toplu iş kuyruğu, canlı metin akışı ve isteğe ba�
 Konsolsuz başlatmak için `Calistir.bat` dosyasına çift tıklayın.
 
 Gereksinimler: `openai-whisper`, `torch`, `PySide6`, `requests`,
-`deep-translator` ve PATH'te (ya da ayarlardan seçilmiş) bir `ffmpeg`.
+`deep-translator` ve PATH'te (ya da ayarlardan seçilmiş) bir `ffmpeg`. Önce
+ekran kartınıza uygun `torch` derlemesini kurun, sonra:
+
+```bash
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+## Testler
+
+Testler saf mantığı (bölümleme, halüsinasyon süzgeçleri, çeviri motorlarının
+sırası) sınar; ağ çağrıları taklit edilir, torch/whisper/PySide6 gerekmez.
+
+```bash
+python -m pip install -r requirements-test.txt
+python -m pytest
+```
+
+Her push ve PR'da GitHub Actions aynı testleri Windows üzerinde çalıştırır.
 
 ## Neler var
 

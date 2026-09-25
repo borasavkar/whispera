@@ -57,8 +57,10 @@ ve «Başlat»a basıldığında gereken düzeltmeler günlüğe yazılarak uygu
 
 **Ek işlemler**
 
-- **Türkçe çeviri** — üç kademeli: cümle bütünlüğü korunarak toplu istek →
-  satır satır yedek yol → internetsiz yerel Marian modeli. Orijinal altyazı
+- **Türkçe çeviri** — kademeli: Gemini → DeepL (isteğe bağlı) → Google
+  (cümle bütünlüğü korunarak toplu istek, ardından satır satır yedek yol) →
+  MyMemory. Her basamak yalnızca öncekinin çeviremediği satırları alır; ayrıntı
+  [Çeviri motorları](#çeviri-motorları) bölümünde. Orijinal altyazı
   `Dosya_EN.srt`, Türkçesi `Dosya.srt` olarak yazılır.
 - **Sansürsüz mod** — dile uygun bir başlangıç istemiyle küfür/argonun
   yumuşatılmasını engeller; çeviride yıldızlanan satırları tekrar ister.
@@ -95,8 +97,9 @@ o çıktı kelime zamanlarının blokta durmasını gerektiriyor.
 
 Türkçe çeviri sırayla şu yolları dener; her biri yalnızca bir öncekinin
 çeviremediği satırları alır. Gemini hepsini çevirirse diğerlerine hiç istek
-gitmez; günlük kotası dolar ya da hata verirse kalan satırlar DeepL'e, DeepL
-de olmazsa Google'a iner:
+gitmez; günlük kotası dolar ya da hata verirse kalan satırlar DeepL'e
+(«DeepL'i kullan» işaretliyse), DeepL de olmazsa Google'a, Google'da kalanlar
+MyMemory'ye iner. Tabloda son sırada duran yerel Marian modeli şu an devre dışı:
 
 | Sıra | Motor | Anahtar | Sınır |
 | --- | --- | --- | --- |
@@ -188,7 +191,7 @@ aktarıyor (`¿Se llama polla?` → «Buna sik mi denir?», `¡Qué puta eres!` 
 «Ne orospusun sen!»), Gemini'den biraz yumuşak (`¿Qué tetas tienes?` → «Ne
 tür göğüslerin var?»).
 
-### Beşinci basamak neden kapalı
+### Yerel Marian basamağı neden kapalı
 
 Yerel Marian modelleri `transformers` + `sentencepiece` gerektiriyor; ikisi de
 kurulu değil ve `Whispera.spec` `transformers`'ı bilerek hariç tutuyor.
@@ -198,7 +201,8 @@ Yani bu basamak hem kaynakta hem exe'de sessizce atlanıyor (günlüğe
 Bilinçli bir tercih: modeller ilk kullanımda birkaç yüz MB ile 1 GB arası
 indiriyor, HuggingFace'in kendi önbelleğine (taşınabilir `models` klasörüne
 değil) yazıyor ve çeviri kalitesi Google/DeepL'in altında kalıyor. Kota derdine
-karşı asıl çözüm DeepL anahtarı; MyMemory de aradaki boşluğu dolduruyor.
+karşı asıl çözüm Gemini ve DeepL anahtarları; MyMemory de aradaki boşluğu
+dolduruyor.
 
 Kod yerinde duruyor — ileride gerekirse `transformers` kurulup spec'teki
 `excludes` listesinden çıkarılması yeterli.
@@ -379,7 +383,7 @@ yanına `SINAMA_RAPORU.txt` olarak yazılır.
 | [forge/media.py](forge/media.py) | FFmpeg bulma, ses çözme, zaman biçimleme |
 | [forge/whisper_engine.py](forge/whisper_engine.py) | Model önbelleği, ilerleme kancaları, dil oylaması, segment temizliği |
 | [forge/subtitles.py](forge/subtitles.py) | Çıktı yazımı (whisper yazıcıları), satır kırma |
-| [forge/translate.py](forge/translate.py) | Üç kademeli Türkçe çeviri motoru |
+| [forge/translate.py](forge/translate.py) | Kademeli Türkçe çeviri motoru (Gemini → DeepL → Google → MyMemory) |
 | [forge/worker.py](forge/worker.py) | Kuyruğu yürüten `QThread`, sinyaller |
 | [forge/ui/theme.py](forge/ui/theme.py) | Palet ve QSS |
 | [forge/ui/widgets.py](forge/ui/widgets.py) | Bırakma alanı, günlük/akış görünümleri, parametre denetimleri |

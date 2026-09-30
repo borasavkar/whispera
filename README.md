@@ -32,9 +32,12 @@ Gereksinimler: `openai-whisper`, `torch`, `PySide6`, `requests`,
 - Gerçek yüzde ve kalan süre tahmini — whisper'ın kendi kare sayacından okunur.
 - **Günlük** sekmesi: renklendirilmiş, kopyalanabilir terminal çıktısı.
 - **Çeviriden sonra orijinal dildeki altyazıyı sil** (varsayılan kapalı): Türkçe
-  altyazı eksiksiz yazıldıysa `Film_ES.srt` gibi orijinal dildeki dosya
-  **Geri Dönüşüm Kutusu'na** taşınır, kalıcı silinmez. Çevrilemeyen satır varsa,
-  iş iptal edildiyse ya da Türkçe dosya yazılamadıysa orijinal korunur. Geri
+  altyazı yazıldıysa ve cümlelerin en az %80'i çevrilebildiyse `Film_ES.srt`
+  gibi orijinal dildeki dosya **Geri Dönüşüm Kutusu'na** taşınır, kalıcı
+  silinmez. Çevrilemeyen birkaç cümle silmeyi engellemez; onlar Türkçe dosyada
+  zaten orijinal diliyle duruyor. Oran %80'in altındaysa (kotalar tükenmiş,
+  çeviri başarısız), iş iptal edildiyse ya da Türkçe dosya yazılamadıysa
+  orijinal korunur. Geri
   Dönüşüm Kutusu olmayan sürücülerde (USB, ağ klasörü) dosyaya dokunulmaz.
 - Pencere konumu ve tüm ayarlar (API anahtarları dahil) kullanıcı profilinde,
   `%APPDATA%\Whispera\settings.json` içinde saklanır. Exe'nin yanında değil:
@@ -134,7 +137,10 @@ kaymaz, o satır çevrilmemiş sayılıp alttaki motorlara devredilir.
 sayısıyla* sınırlı (Eylül 2026'da gemini-3.6-flash için günde 20 istek). Bu
 yüzden satırlar 150'lik paketlerle gönderiliyor — 95 cümlelik bir film tek
 istek tutuyor. Bir modelin günlük kotası dolunca program beklemeden kotası
-ayrı tutulan sıradaki modele geçiyor (3.6-flash → 3.5-flash → 2.5-flash).
+ayrı tutulan sıradaki modele geçiyor. Sırada sekiz model var (3.6, 3.8, 3.7,
+3.5, 3-preview, 2.5 flash ve 3.5 / 3.1 flash-lite); hepsi aynı zor satırlarla
+ölçüldü ve argoyu yumuşatmıyor. Bir model aşırı yoğunsa (HTTP 503) ya da
+bağlantı kurulamıyorsa da paket Google'a düşmeden sıradaki modele gidiyor.
 Hepsi dolarsa kalan satırlar Google'a, o da limitteyse orijinal dilde kalır;
 günlükte `⚠️ N cümle çevrilemedi` satırının altında sebebi yazar. Kotalar her
 gün sıfırlanır.
@@ -211,6 +217,16 @@ verisinden gelen jenerik satırlar üretiyor (`Transcription by CastingWords`,
 `Subtitles by the Amara.org community`). `condition_on_previous_text` açıkken bu
 döngü bir daha kırılmıyor ve saatlik bir film tek cümlenin tekrarı olarak
 çıkabiliyor.
+
+**Tekrar döngüsünde yeniden deneme.** Döngü denetimi, bilinen artıklar
+(«¡Suscríbete al canal!», «¡Gracias por ver el video!» vb.) ayıklandıktan
+sonra yapılıyor. Bu artıklar konuşmasız bölümlerde 30 saniyede bir çıkıyor ve
+zaten yazılmadan önce siliniyor; ham çıktıya bakılınca sağlıklı sonuç da
+«bozuk» sayılıyordu. Döngü varsa dosya istemsiz ve önceki metne koşullanmadan
+yeniden metne dökülür; iki sonuçtan **daha çok farklı satır** çıkaran tutulur.
+Gerçek bir 1 saatlik filmde döngülü geçiş 107, döngü kırıcı geçiş 259 farklı
+satır verdi. Bedeli: o dosyanın metne dökme süresi yaklaşık iki katına çıkar
+(ölçüldü: 3 dk → 6 dk 42 sn); çeviri etkilenmez.
 
 Dört kademeli savunma var:
 

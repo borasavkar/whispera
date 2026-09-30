@@ -257,10 +257,19 @@ class GeminiCevirici:
     PAKET_SATIR = 150          # tek istekte gönderilecek satır sayısı
     ZAMAN_ASIMI = 180
 
-    # Kota model başına ayrı tutuluyor; biri dolunca sıradakine geçilir.
-    # 3.5-flash ve 2.5-flash aynı zor satırlarla ölçüldü, kayıt korunuyor.
-    YEDEK_MODELLER = ("gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash")
+    # Ücretsiz kota model başına ayrı tutuluyor (günde 20 istek); biri dolunca
+    # ya da yanıt vermeyince sıradakine geçilir. Hepsi aynı 12 zor satırla
+    # ölçüldü, argo ve küfür yumuşatılmadan aktarılıyor. Sekiz model günde
+    # ~160 istek, 150 satırlık paketlerle ~24.000 satır demek. Takma adlar
+    # (gemini-flash-latest vb.) listede yok: kotayı hangi modelle paylaştıkları
+    # belli değil.
+    YEDEK_MODELLER = (
+        "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash",
+        "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash",
+        "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+    )
     DAKIKA_BEKLEME_UST = 65.0  # dakikalık kota için en fazla bu kadar bekle
+    ONARIM_PAKET = 40          # atlanan satırlar bu boyutta yeniden gönderilir
 
     # Yeni modeller yoğunlukta 503 veriyor. Tek bir sarsıntıda paketi Google'a
     # düşürmek çeviri kaydını bozuyor; ölçüldü: 11 satırlık paket bir turda
@@ -318,10 +327,21 @@ class GeminiCevirici:
             deneme += 1
             if self._iptal():
                 raise KullaniciIptali()
-            cevap = self._oturum.post(
-                self.UC_NOKTA.format(model=self._model),
-                params={"key": self._anahtar}, json=govde,
-                timeout=self.ZAMAN_ASIMI)
+            try:
+                cevap = self._oturum.post(
+                    self.UC_NOKTA.format(model=self._model),
+                    params={"key": self._anahtar}, json=govde,
+                    timeout=self.ZAMAN_ASIMI)
+            except requests.RequestException as e:
+                son_hata = f"{e.__class__.__name__}: {str(e)[:80]}"
+                if deneme < self.DENEME_SAYISI:
+                    self.bekle(2.0 * (2 ** (deneme - 1)))
+                    continue
+                if self._sonraki_modele_gec("bağlantı kurulamadı"):
+                    deneme = 0
+                    continue
+                self.devre_disi = True
+                raise CeviriHatasi(son_hata)
 
             if cevap.status_code == 200:
                 veri = cevap.json()
@@ -367,13 +387,26 @@ class GeminiCevirici:
                     raise CeviriHatasi("Gemini günlük ücretsiz kotası tüm modellerde doldu")
                 if deneme < self.DENEME_SAYISI:
                     self.bekle(min(max(bekleme, 2.0) + 1.0, self.DAKIKA_BEKLEME_UST))
-                continue
+                    continue
+                if self._sonraki_modele_gec("dakikalık kotası açılmadı"):
+                    deneme = 0
+                    continue
+                self.devre_disi = True
+                raise CeviriHatasi(son_hata)
 
             if cevap.status_code not in self.GECICI_KODLAR:
                 raise CeviriHatasi(son_hata)
 
             if deneme < self.DENEME_SAYISI:
                 self.bekle(2.0 * (2 ** (deneme - 1)))
+                continue
+            # Model aşırı yoğun (503) ya da sunucu hatası sürüyor: paketi
+            # Google'a düşürmek yerine kotası ve sunucusu ayrı olan modele geç.
+            if self._sonraki_modele_gec(f"yanıt vermiyor (HTTP {cevap.status_code})"):
+                deneme = 0
+                continue
+            self.devre_disi = True
+            raise CeviriHatasi(f"Gemini modellerinin hiçbiri yanıt vermedi ({son_hata})")
 
         raise CeviriHatasi(son_hata)
 
@@ -486,9 +519,14 @@ class GeminiCevirici:
             return {}
 
         toplanan: dict[int, str] = {}
+        atlanan: list[int] = []      # yanıt geldiği hâlde karşılığı olmayanlar
         for bas in range(0, len(indeksler), self.PAKET_SATIR):
             if self._iptal():
                 raise KullaniciIptali()
+            if self.devre_disi:
+                self._log("   ⚠️ Gemini bu dosya için kapandı; kalan satırlar "
+                          "diğer motorlara bırakılıyor.")
+                break
             grup = indeksler[bas:bas + self.PAKET_SATIR]
             govde = AYIRAC.join(f"{i}|{satirlar[i]}" for i in grup)
             istek = (self.YONERGE.format(hedef=hedef) + AYIRAC * 2 + govde)
@@ -509,7 +547,34 @@ class GeminiCevirici:
                               "Kota her gün sıfırlanır.")
                     break
                 continue
-            toplanan.update(self._yaniti_coz(yanit or "", grup))
+            bulunan = self._yaniti_coz(yanit or "", grup)
+            toplanan.update(bulunan)
+            atlanan.extend(i for i in grup if i not in bulunan)
+
+        # Model yanıt verdiği hâlde bazı satırları atladıysa (ya da hizası
+        # bozuk döndüyse) o satırlar Google'a düşmeden önce küçük paketlerle
+        # bir kez daha denenir. İsteği hiç karşılanmamış paketler buraya
+        # girmez: onları yeniden göndermek yalnızca kotayı tüketir (ölçüldü:
+        # 503 ve kota hatasıyla kalan 750 satır 40'lık paketlerle yeniden
+        # gönderilip son modelin kotasını da bitiriyordu).
+        eksik = [i for i in atlanan if i not in toplanan]
+        if eksik and not self.devre_disi:
+            self._log(f"   \U0001f501 Gemini {len(eksik)} satırı atladı; küçük paketlerle "
+                      f"yeniden deneniyor…")
+            for bas in range(0, len(eksik), self.ONARIM_PAKET):
+                if self._iptal():
+                    raise KullaniciIptali()
+                if self.devre_disi:
+                    break
+                grup = eksik[bas:bas + self.ONARIM_PAKET]
+                govde = AYIRAC.join(f"{i}|{satirlar[i]}" for i in grup)
+                try:
+                    yanit = self._istek(self.YONERGE.format(hedef=hedef) + AYIRAC * 2 + govde)
+                except KullaniciIptali:
+                    raise
+                except Exception:
+                    break
+                toplanan.update(self._yaniti_coz(yanit or "", grup))
         return toplanan
 
 

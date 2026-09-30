@@ -55,12 +55,25 @@ ISTEM_EKO_SINIRI = 3
 DONGU_KIRICI_ISIN = 12
 
 
-def _cesitlilik(sonuc: dict) -> float:
-    """Sonuçtaki benzersiz metin oranı; iki denemeyi kıyaslamak için."""
-    metinler = [" ".join((x.get("text") or "").split()).casefold()
-                for x in (sonuc.get("segments") or [])
-                if (x.get("text") or "").strip()]
-    return len(set(metinler)) / len(metinler) if metinler else 0.0
+def _temiz_segmentler(sonuc: dict) -> list[dict]:
+    """Bilinen altyazı artıkları («Suscríbete al canal» vb.) ayıklanmış segmentler.
+
+    Bu satırlar yazmadan önce zaten siliniyor. Döngü denetimi ham çıktıya
+    bakarsa, konuşmasız bölümlerde 30 saniyede bir çıkan bu artıkları döngü
+    sanıp sağlıklı bir sonucu «bozuk» ilan ediyordu.
+    """
+    return halusinasyonlari_ele(sonuc.get("segments") or [])[0]
+
+
+def _icerik(sonuc: dict) -> int:
+    """Artıklar çıkarıldıktan sonra kalan farklı satır sayısı.
+
+    İki denemeden hangisinin tutulacağına bununla karar verilir. Oran değil
+    sayı: döngüye düşen geçiş konuşmayı da yutuyor. Gerçek bir dosyada
+    döngülü geçiş 107, döngü kırıcı geçiş 259 farklı satır çıkarmıştı.
+    """
+    return len({" ".join((x.get("text") or "").split()).casefold()
+                for x in _temiz_segmentler(sonuc) if (x.get("text") or "").strip()})
 
 
 class Isci(QThread):
@@ -319,10 +332,10 @@ class Isci(QThread):
         # --- 7. Türkçe çeviri --------------------------------------------
         if ceviri_yapilacak:
             orijinaller = list(yazilanlar)
-            tr_yollari, eksiksiz = self._turkceye_cevir(sonuc, dosya, ceviri_kaynagi)
+            tr_yollari, cevrilen, toplam = self._turkceye_cevir(sonuc, dosya, ceviri_kaynagi)
             yazilanlar += tr_yollari
             if ayarlar.orijinali_sil:
-                silinenler = self._orijinali_kaldir(orijinaller, tr_yollari, eksiksiz)
+                silinenler = self._orijinali_kaldir(orijinaller, tr_yollari, cevrilen, toplam)
                 yazilanlar = [y for y in yazilanlar if y not in silinenler]
         elif ayarlar.turkce_ceviri and (ceviri_kaynagi or "").lower() == "tr":
             self._log("ℹ️ Kaynak zaten Türkçe; ayrıca çeviri dosyası üretilmedi.")
@@ -347,7 +360,7 @@ class Isci(QThread):
         """
         sonuc = self._tek_gecis(ses, dil, istem, cihaz)
 
-        if bozuk_cikti_mi(sonuc.get("segments") or []):
+        if bozuk_cikti_mi(_temiz_segmentler(sonuc)):
             # Not: bu denetim eskiden yalnızca istem varken çalışıyordu, ama
             # tekrar döngüsü istemden bağımsız da oluşuyor — kod çözme kendi
             # içinde dejenere bir hipoteze kilitleniyor. Gerçek bir örnekte
@@ -362,13 +375,17 @@ class Isci(QThread):
             self.akis_temizle.emit()
             yeniden = self._tek_gecis(ses, dil, None, cihaz, dongu_kirici=True)
 
-            # Yeniden deneme de çökerse elde daha iyi olanı bırakırız; ikisi de
-            # kötüyse en azından daha çeşitli olanı seçmiş oluruz.
-            if bozuk_cikti_mi(yeniden.get("segments") or []):
+            ilk, ikinci = _icerik(sonuc), _icerik(yeniden)
+            if bozuk_cikti_mi(_temiz_segmentler(yeniden)):
                 self._log("   ⚠️ İkinci deneme de tekrar döngüsüne düştü; "
-                          "iki sonuçtan daha çeşitli olanı kullanılıyor.")
-                if _cesitlilik(yeniden) <= _cesitlilik(sonuc):
-                    return sonuc
+                          "daha çok içerik çıkaran sonuç kullanılıyor.")
+            else:
+                self._log(f"   ✅ İkinci deneme temiz: {ikinci} farklı satır "
+                          f"(ilk denemede {ilk}).")
+            # Döngü kırıcı geçiş eşitlikte tercih edilir: döngüsü olmayan
+            # sonuç aynı sayıda satırla bile daha güvenilir.
+            if ikinci < ilk:
+                return sonuc
             return yeniden
 
         return sonuc
@@ -459,22 +476,32 @@ class Isci(QThread):
                       f"sonuç beklediğiniz gibi değilse dili elle seçin.")
         return dil
 
+    # Orijinalin silinmesi için çevrilmesi gereken en düşük cümle oranı.
+    # Çevrilemeyen cümleler Türkçe dosyada zaten orijinal diliyle duruyor;
+    # «eksiksiz olsun» şartı hiçbir şeyi korumuyor, sadece uzun filmlerde
+    # silmeyi engelliyordu (ölçüldü: 6 filmin 5'inde %2-10 arası satır
+    # çevrilmeden kalmıştı, yalnızca 82 blokluk kısa film eksiksizdi). Bunun
+    # altı, kotaların tükendiği başarısız bir çeviri demek; orijinal kalır.
+    SILME_ORANI = 0.80
+
     def _orijinali_kaldir(self, orijinaller: list[str], tr_yollari: list[str],
-                          eksiksiz: bool) -> set[str]:
-        """Çeviri eksiksizse orijinal dildeki altyazıları Geri Dönüşüm Kutusu'na taşır.
+                          cevrilen: int, toplam: int) -> set[str]:
+        """Çeviri büyük ölçüde başarılıysa orijinal altyazıyı Geri Dönüşüm Kutusu'na taşır.
 
         Yalnızca aynı formatta dolu bir Türkçe karşılığı yazılmış dosyalar
-        kaldırılır. Çevrilemeyen satır varsa orijinal korunur: Türkçe dosyada o
-        satırlar zaten orijinal dilde, ama çevrilen satırların aslı başka
-        hiçbir yerde kalmaz.
+        kaldırılır; iptal edilen işte ya da çevirinin %80'inden azı
+        yapılabildiyse orijinal korunur.
         """
         if self._iptal.is_set():
             return set()
         if not tr_yollari:
             self._log("ℹ️ Türkçe altyazı yazılamadığı için orijinal altyazı silinmedi.")
             return set()
-        if not eksiksiz:
-            self._log("ℹ️ Bazı satırlar çevrilemediği için orijinal altyazı silinmedi.")
+        oran = cevrilen / toplam if toplam else 1.0
+        if oran < self.SILME_ORANI:
+            self._log(f"ℹ️ Orijinal altyazı silinmedi: çevrilebilen cümle oranı "
+                      f"%{oran * 100:.0f} ({cevrilen}/{toplam}); silmek için en az "
+                      f"%{self.SILME_ORANI * 100:.0f} gerekiyor.")
             return set()
 
         tr_uzantilar = {
@@ -502,8 +529,8 @@ class Isci(QThread):
         return silinenler
 
     def _turkceye_cevir(self, sonuc: dict, dosya: str,
-                        kaynak_dil: str) -> tuple[list[str], bool]:
-        """Türkçe altyazıyı yazar; (yazılan yollar, eksiksiz çevrildi mi) döner."""
+                        kaynak_dil: str) -> tuple[list[str], int, int]:
+        """Türkçe altyazıyı yazar; (yazılan yollar, çevrilen, toplam) döner."""
         ayarlar = self._ayarlar
         self.durum_degisti.emit("Türkçeye çevriliyor")
         self._log("=" * 52)
@@ -534,7 +561,7 @@ class Isci(QThread):
             ceviriler = motor.cevir(bloklar, kaynak_dil)
         except KullaniciIptali:
             self._log("🛑 Çeviri yarıda kesildi; o ana kadar çevrilenler kaydedilemedi.")
-            return [], False
+            return [], 0, 0
 
         if self._iptal.is_set():
             self._log("🛑 Çeviri yarıda kesildi; o ana kadar çevrilenler kaydediliyor.")
@@ -573,8 +600,7 @@ class Isci(QThread):
             if motor.son_hata:
                 self._log(f"   Son hata: {motor.son_hata}")
 
-        eksiksiz = cevrilemeyen == 0 and not self._iptal.is_set()
-        return yazilanlar, eksiksiz
+        return yazilanlar, max(0, toplam - cevrilemeyen), toplam
 
     # --- hata ------------------------------------------------------------
 

@@ -149,6 +149,16 @@ HALUSINASYON_KALIPLARI = (
     "подписывайтесь",
     "thanks for watching",
     "thank you for watching",
+    # YouTube kapanış cümlesi; konuşmasız bölümlerde 30 saniyede bir çıkıyor.
+    # Gerçek bir dosyada 1 saatte 43 kez: «¡Gracias por ver el video!».
+    "gracias por ver el video",
+    "gracias por ver este video",
+    "merci d'avoir regardé",
+    "grazie per la visione",
+    "grazie per aver guardato",
+    "danke fürs zuschauen",
+    "obrigado por assistir",
+    "izlediğiniz için teşekkürler",
     "www.zeoranger.co.uk",
     "©",
 )

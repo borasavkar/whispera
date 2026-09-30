@@ -249,9 +249,12 @@ class AnaPencere(QMainWindow):
         duzen.setContentsMargins(20, 0, 20, 0)
         duzen.setSpacing(8)
 
-        ad = QLabel("Subtitle")
+        # Ad `UYGULAMA_ADI`'ndan gelir; uygulama yeniden adlandırılınca logo
+        # eski adda kalmasın (SubtitleForge → Whispera'da böyle kalmıştı).
+        bolum = max(1, len(UYGULAMA_ADI) - 3)
+        ad = QLabel(UYGULAMA_ADI[:bolum])
         ad.setObjectName("baslikAd")
-        forge = QLabel("Forge")
+        forge = QLabel(UYGULAMA_ADI[bolum:])
         forge.setObjectName("baslikAd")
         forge.setProperty("vurgulu", "true")
 

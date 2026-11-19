@@ -400,9 +400,18 @@ class WhisperMotoru:
             if not torch.cuda.is_available():
                 return f"CPU · {os.cpu_count() or '?'} çekirdek"
             ad = torch.cuda.get_device_name(0)
-            surum = getattr(getattr(torch, "version", None), "hip", None)
-            etiket = f"ROCm {surum}" if surum else f"CUDA {getattr(torch.version, 'cuda', '')}".strip()
-            return f"{ad} · {etiket}"
+            hip = getattr(getattr(torch, "version", None), "hip", None)
+            if hip:
+                # `torch.version.hip` ROCm'un değil HIP çalışma zamanının sürümü
+                # (ROCm 10.2 → HIP 7.17). ROCm sürümü torch'un yerel etiketinde
+                # duruyor: "2.15.0+rocm10.2.0".
+                eslesme = re.search(r"\+rocm(\d+(?:\.\d+)*)", torch.__version__)
+                if eslesme:
+                    rocm = eslesme.group(1).removesuffix(".0")
+                    return f"{ad} · ROCm {rocm} (HIP {'.'.join(hip.split('.')[:2])})"
+                return f"{ad} · HIP {hip}"
+            cuda = getattr(torch.version, "cuda", None)
+            return f"{ad} · CUDA {cuda}" if cuda else ad
         except Exception:
             return "GPU"
 

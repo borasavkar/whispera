@@ -342,6 +342,24 @@ yapılan işleri hızlandırırdı (`large-v3` için ~13 saniye) ama uygulama bo
 dururken gigabaytlarca VRAM'i tutmasına değmiyor. Kuyruk içindeki dosyalar
 arasında model yeniden yüklenmez; yalnızca kuyruğun sonunda bırakılır.
 
+## GPU çalışma zamanı
+
+PyTorch **2.15.0 + ROCm 10.2** (HIP 7.17), AMD'nin deposundan, RX 9070 serisi
+(gfx1201) için. Python **3.11–3.14** gerekiyor; 3.15 için paket yok. Kurulum:
+
+```bash
+.venv/Scripts/python.exe -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "torch[device-gfx1201]==2.15.0+rocm10.2.0"
+```
+
+`torchvision` ve `torchaudio` kurulmuyor: uygulama ikisini de kullanmıyor ve
+2.15 ile uyumlu torchvision depoda henüz yok.
+
+ROCm 10.0'dan geçerken ölçüldü: 15 dakikalık Almanca ses 31,6–33,9 sn → 30,2 sn,
+10 dakikalık İngilizce ses 47,7–48,4 sn → 44,6 sn, tepe VRAM 2,17 → 2,09 GB.
+Üç kısa test videosunda metin ve zamanlar aynı kaldı, tek fark bir İtalyanca
+kelimenin düzelmesiydi. 10.0'a dönmek için kurulu sürümlerin listesi
+`.venv\paketler-rocm10.0-yedek.txt` dosyasında.
+
 ## Exe derleme
 
 ```bash
